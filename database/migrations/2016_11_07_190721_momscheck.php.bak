@@ -1,0 +1,39 @@
+<?php
+
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Database\Migrations\Migration;
+
+class Momscheck extends Migration
+{
+    /**
+     * Run the migrations.
+     *
+     * @return void
+     */
+    public function up()
+    {
+        Schema::create('momscheck', function (Blueprint $table) {
+            $table->increments('id');
+            $table->string('po');
+            $table->string('partsname');
+            $table->string('kcode');
+            $table->integer('lvl',false, true)->length(5);
+            $table->string('vendor');
+            $table->integer('usage',false, true)->length(20);
+            $table->integer('qty',false, true)->length(20);
+            $table->integer('kvol',false, true)->length(20);
+            $table->string('diff');
+            $table->timestamps();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     *
+     * @return void
+     */
+    public function down()
+    {
+        Schema::drop('momscheck');
+    }
+}

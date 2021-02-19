@@ -1,0 +1,1407 @@
+<?php
+namespace App\Http\Controllers\QCDB;
+
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\CommonController;
+use DB;
+use Config;
+use App\OQCInspection;
+use Yajra\Datatables\Datatables;
+use Illuminate\Support\Facades\Auth; #Auth facade
+use Illuminate\Http\Request;
+use App\Http\Requests;
+use PDF;
+use Carbon\Carbon;
+use Excel;
+
+class OQCInspectionController extends Controller
+{
+    protected $mysql;
+    protected $mssql;
+    protected $common;
+    protected $com;
+
+    public function __construct()
+    {
+        $this->middleware('auth');
+        $this->com = new CommonController;
+
+        if (Auth::user() != null) {
+            $this->mysql = $this->com->userDBcon(Auth::user()->productline,'mysql');
+            $this->mssql = $this->com->userDBcon(Auth::user()->productline,'mssql');
+            $this->common = $this->com->userDBcon(Auth::user()->productline,'common');
+        } else {
+            return redirect('/');
+        }
+    }
+
+    public function getOQCInspection()
+    {
+        $common = new CommonController;
+        if(!$common->getAccessRights(Config::get('constants.MODULE_CODE_OQCDB')
+                                    , $userProgramAccess))
+        {
+            return redirect('/home');
+        }
+        else
+        {
+            return view('qcdb..oqcinspection',['userProgramAccess' => $userProgramAccess]);
+        }
+    }
+
+    public function initData()
+    {
+        $displaymod = DB::connection($this->mysql)->table('oqc_inspections_mod')->get();
+        $countrecords = DB::connection($this->mysql)->table('oqc_inspections')->count();
+        $family = $this->com->getDropdownByName('Family');
+        //$family = $this->com->getDropdownByName('Family');
+        $tofinspection = $this->com->getDropdownByName('Type of Inspection');
+        $sofinspection = $this->com->getDropdownByName('Severity of Inspection');
+        $inspectionlvl = $this->com->getDropdownByName('Inspection Level');
+        $assemblyline = $this->com->getDropdownByName('Assembly Line');
+        $aql = $this->com->getDropdownByName('AQL');
+        $shift = $this->com->getDropdownByName('Shift');
+        $submission = $this->com->getDropdownByName('Submission');
+        $shift = $this->com->getDropdownByName('Shift');
+        $mod = $this->com->getDropdownByName('Mode of Defect - OQC Inscpection Molding');
+
+        return $data = [
+            'oqcmod'=>$displaymod,
+            'families' =>$family,
+            'tofinspections' => $tofinspection,
+            'sofinspections' => $sofinspection,
+            'inspectionlvls' =>$inspectionlvl,
+            'aqls' =>$aql,
+            'shifts' =>$shift,
+            'submissions'=>$submission,
+            'mods'=>$mod,
+            'assemblyline'=>$assemblyline,
+            'count'=>$countrecords
+        ];
+    }
+
+    public function getmodoqc(Request $request){
+        $pono = $request->pono;
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')->select('mod')->where('pono',$pono)->get();
+        return $table;
+    }
+
+    public function getrows(Request $req){
+        $output = [];
+        $po = '';
+        $date = '';
+        $tableData = DB::connection($this->mysql)->table('oqc_inspections as a')
+                    ->leftJoin('oqc_inspections_mod as b','a.modid','=','b.modid')
+                    ->groupBy('a.po_no','a.lot_no','a.submission')
+                    ->orderBy('id','desc')
+                    ->select(['a.id'
+                        ,DB::raw('a.fy as fy')
+                        ,DB::raw('a.ww as ww')
+                        ,DB::raw('a.date_inspected as date_inspected')
+                        ,DB::raw('a.shift as shift')
+                        ,DB::raw('a.time_ins_from as time_ins_from')
+                        ,DB::raw('a.time_ins_to as time_ins_to')
+                        ,DB::raw('a.submission as submission')
+                        ,DB::raw('a.lot_qty as lot_qty')
+                        ,DB::raw('a.sample_size as sample_size')
+                        ,DB::raw('a.num_of_defects as num_of_defects')
+                        ,DB::raw('a.lot_no as lot_no')
+                        ,DB::raw('b.mod1 as mod1')
+                        ,DB::raw("IFNULL(SUM(b.qty),0) as qty")
+                        ,DB::raw('a.judgement as judgement')
+                        ,DB::raw('a.inspector as inspector')
+                        ,DB::raw('a.remarks as remarks')
+                        ,DB::raw('a.assembly_line as assembly_line')
+                        ,DB::raw('a.app_date as app_date')
+                        ,DB::raw('a.app_time as app_time')
+                        ,DB::raw('a.prod_category as prod_category')
+                        ,DB::raw('a.po_no as po_no')
+                        ,DB::raw('a.device_name as device_name')
+                        ,DB::raw('a.customer as customer')
+                        ,DB::raw('a.po_qty as po_qty')
+                        ,DB::raw('a.family as family')
+                        ,DB::raw('a.type_of_inspection as type_of_inspection')
+                        ,DB::raw('a.severity_of_inspection as severity_of_inspection')
+                        ,DB::raw('a.inspection_lvl as inspection_lvl')
+                        ,DB::raw('a.aql as aql')
+                        ,DB::raw('a.accept as accept')
+                        ,DB::raw('a.reject as reject')
+                        ,DB::raw('a.coc_req as coc_req')
+                        ,DB::raw('a.lot_inspected as lot_inspected')
+                        ,DB::raw('a.lot_accepted as lot_accepted')
+                        ,DB::raw('a.dbcon as dbcon')
+                        ,DB::raw('a.modid as modid')
+                        ,DB::raw('a.type as type')]);
+        
+        if ($req->report_status == 'SEARCH') {
+            if (!empty($req->pono) || $req->pono !== '') {
+                $po = " AND a.po_no = '".$req->pono."'";
+            } else {
+                $po = '';
+            }
+
+            if ($req->datefrom !== '' || !empty($req->datefrom)) {
+                $date = " AND a.date_inspected BETWEEN '".$this->convertDate($req->datefrom,'Y-m-d')."' AND '".$this->convertDate($req->dateto,'Y-m-d')."'";
+            } else {
+                $date = '';
+            }
+
+            $tableData = DB::connection($this->mysql)->table('oqc_inspections as a')
+                    ->leftJoin('oqc_inspections_mod as b','a.modid','=','b.modid')
+                    ->whereRaw("1=1".$po.$date)
+                    ->groupBy('a.po_no','a.lot_no','a.submission')
+                    ->orderBy('id','desc')
+                    ->select(['a.id'
+                        ,DB::raw('a.fy as fy')
+                        ,DB::raw('a.ww as ww')
+                        ,DB::raw('a.date_inspected as date_inspected')
+                        ,DB::raw('a.shift as shift')
+                        ,DB::raw('a.time_ins_from as time_ins_from')
+                        ,DB::raw('a.time_ins_to as time_ins_to')
+                        ,DB::raw('a.submission as submission')
+                        ,DB::raw('a.lot_qty as lot_qty')
+                        ,DB::raw('a.sample_size as sample_size')
+                        ,DB::raw('a.num_of_defects as num_of_defects')
+                        ,DB::raw('a.lot_no as lot_no')
+                        ,DB::raw('b.mod1 as mod1')
+                        ,DB::raw("IFNULL(SUM(b.qty),0) as qty")
+                        ,DB::raw('a.judgement as judgement')
+                        ,DB::raw('a.inspector as inspector')
+                        ,DB::raw('a.remarks as remarks')
+                        ,DB::raw('a.assembly_line as assembly_line')
+                        ,DB::raw('a.app_date as app_date')
+                        ,DB::raw('a.app_time as app_time')
+                        ,DB::raw('a.prod_category as prod_category')
+                        ,DB::raw('a.po_no as po_no')
+                        ,DB::raw('a.device_name as device_name')
+                        ,DB::raw('a.customer as customer')
+                        ,DB::raw('a.po_qty as po_qty')
+                        ,DB::raw('a.family as family')
+                        ,DB::raw('a.type_of_inspection as type_of_inspection')
+                        ,DB::raw('a.severity_of_inspection as severity_of_inspection')
+                        ,DB::raw('a.inspection_lvl as inspection_lvl')
+                        ,DB::raw('a.aql as aql')
+                        ,DB::raw('a.accept as accept')
+                        ,DB::raw('a.reject as reject')
+                        ,DB::raw('a.coc_req as coc_req')
+                        ,DB::raw('a.lot_inspected as lot_inspected')
+                        ,DB::raw('a.lot_accepted as lot_accepted')
+                        ,DB::raw('a.dbcon as dbcon')
+                        ,DB::raw('a.modid as modid')
+                        ,DB::raw('a.type as type')]);
+        
+        }
+        return Datatables::of($tableData)
+                        ->addColumn('action', function($data) {
+                            return '<button type="button" name="edit-task" class="btn btn-sm btn-primary edit-task" value="'.$data->id.'|'.$data->assembly_line.'|'.$data->app_date.'|'.$data->app_time.'|'.$data->lot_no.'|'.$data->prod_category.'|'.$data->po_no.'|'.$data->device_name.'|'.$data->customer.'|'.$data->po_qty.'|'.$data->family.'|'.$data->type_of_inspection.'|'.$data->severity_of_inspection.'|'.$data->inspection_lvl.'|'.$data->aql.'|'.$data->accept.'|'.$data->reject.'|'.$data->date_inspected.'|'.$data->ww.'|'.$data->fy.'|'.$data->shift.'|'.$data->time_ins_from.'|'.$data->time_ins_to.'|'.$data->inspector.'|'.$data->submission.'|'.$data->coc_req.'|'.$data->judgement.'|'.$data->lot_qty.'|'.$data->sample_size.'|'.$data->lot_inspected.'|'.$data->lot_accepted.'|'.$data->num_of_defects.'|'.$data->remarks.'|'.$data->dbcon.'|'.$data->type.'">'.
+                                '   <i class="fa fa-edit"></i> '.
+                            '</button>';
+                        })
+                        ->addColumn('fyww', function($data) {
+                            return $data->fy.' - '.$data->ww.'<input type="hidden" id="hd_pono" value="'.$data->po_no.'" name="hd_pono[]">
+                                    <input type="hidden" id="hd_fyww" value="'.$data->fy.' - '.$data->ww.'" name="hd_fyww[]">';
+                        })
+                        ->editColumn('date_inspected', function($data) {
+                            return $data->date_inspected;
+                        })
+                        ->editColumn('device_name', function($data) {
+                            return $data->device_name;
+                        })
+                        ->editColumn('time_ins_from', function($data) {
+                            return $data->time_ins_from;
+                        })
+                        ->editColumn('time_ins_to', function($data) {
+                            return $data->time_ins_to;
+                        })
+                        ->editColumn('submission', function($data) {
+                            return $data->submission;
+                        })
+                        ->editColumn('lot_qty', function($data) {
+                            return $data->lot_qty;
+                        })
+                        ->editColumn('sample_size', function($data) {
+                            return $data->sample_size;
+                        })
+                        ->editColumn('num_of_defects', function($data) {
+                            return $data->num_of_defects;
+                        })
+                        ->editColumn('lot_no', function($data) {
+                            return $data->lot_no;
+                        })
+                        ->addColumn('mod', function($data) use($req,$output) {
+                            if ($data->judgement == 'Accept') {
+                                return 'NDF';
+                            } else {
+                                if($req->report_status == "GROUPBY"){
+                                    $table = DB::connection($this->mysql)->table('oqc_inspections_mod')
+                                        ->select('pono',DB::raw("(GROUP_CONCAT(mod1 SEPARATOR ' , ')) AS mod1"),DB::raw("(GROUP_CONCAT(lotno SEPARATOR ' , ')) AS lot_no"),'submission','qty')
+                                        ->groupBy('pono','submission','device')
+                                        ->get();
+                                       
+                                } else {
+                                    $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                                        ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                                        ->select('a.po_no',
+                                                'b.mod1',
+                                                'a.lot_no',
+                                                'a.submission')
+                                        ->where('b.pono',$data->po_no)
+                                        ->where('a.lot_no',$data->lot_no)
+                                        ->where('a.submission',$data->submission)
+                                        ->get();
+                                }
+
+                                foreach ($table as $key => $data) {
+                                    $output[$key] = 'ok';//$data->mod1;
+                                    // $output['lotno'][$key] = $data->lot_no;
+                                }
+
+                                return $output;
+                            }
+                        })
+                        ->editColumn('po_qty', function($data) {
+                            return $data->po_qty;
+                        })
+                        ->editColumn('judgement', function($data) {
+                            return $data->judgement;
+                        })
+                        ->editColumn('inspector', function($data) {
+                            return $data->inspector;
+                        })
+                        ->editColumn('remarks', function($data) {
+                            return $data->remarks;
+                        })
+                        ->make(true);
+    }
+
+    private function convertDate($date,$format)
+    {
+        $time = strtotime($date);
+        $newdate = date($format,$time);
+        return $newdate;
+    }
+
+    public function getYPICSrecords(Request $request){
+        if ($request->is_probe > 0) {
+            $msrecords = DB::connection($this->mssql)
+                        ->select("SELECT R.SORDER as PO,
+                                        HK.CODE as devicecode,
+                                        H.NAME as DEVNAME,
+                                        R.CUST as CUSTOMER_CODE,
+                                        C.CNAME as CUSTOMER,
+                                        HK.KVOL as POQTY,
+                                        I.BUNR
+                                FROM XRECE as R
+                                LEFT JOIN XSLIP as S on R.SORDER = S.SEIBAN
+                                LEFT JOIN XHIKI as HK on S.PORDER  = HK.PORDER
+                                LEFT JOIN XHEAD as H ON HK.CODE = H.CODE
+                                LEFT JOIN XITEM as I ON HK.CODE = I.CODE
+                                LEFT JOIN XCUST as C ON R.CUST = C.CUST
+                                WHERE R.SORDER like '".$request->pono."%'
+                                AND I.BUNR = 'PROBE'");
+
+            // $msrecords = DB::connection($this->mssql)
+            //                 ->select("SELECT R.CODE as devicecode,
+            //                                 H.NAME as DEVNAME,
+            //                                 R.KCODE as partcode
+            //                         FROM XHEAD AS H
+            //                         LEFT JOIN XPRTS AS R ON H.CODE = R.CODE
+            //                         WHERE R.KCODE = '".$getter[0]->devicecode."'");
+        } else {
+            $msrecords = DB::connection($this->mssql)
+                        ->select("SELECT R.SORDER as PO,
+                                        R.CODE as devicecode,
+                                        H.NAME as DEVNAME,
+                                        R.CUST as CUSTOMER_CODE,
+                                        C.CNAME as CUSTOMER,
+                                        SUM(R.KVOL) as POQTY
+                                FROM XRECE as R
+                                LEFT JOIN XHEAD as H ON R.CODE = H.CODE
+                                LEFT JOIN XCUST as C ON R.CUST = C.CUST
+                                WHERE R.SORDER like '".$request->pono."%'
+                                GROUP BY R.SORDER,
+                                        R.CODE,
+                                        H.NAME,
+                                        R.CUST,
+                                        C.CNAME");
+        }
+        
+        return $msrecords;
+    }
+
+    public function getProbeProduct(Request $req)
+    {
+        $msrecords = DB::connection($this->mssql)->table('XHEAD AS H')
+                        ->leftJoin('XPRTS as R','H.CODE','=','R.CODE')
+                        ->where('R.KCODE',$req->code)
+                        ->select('R.CODE as devicecode',
+                                'H.NAME as DEVNAME',
+                                'R.KCODE as partcode')
+                        ->get();
+        return $msrecords;
+    }
+
+    public function getFamily(Request $request){
+         $msrecords = DB::connection($this->mssql)
+                ->table('XITEM')
+                ->select('BUNR AS family')
+                ->distinct()
+                ->get();
+        return $msrecords;
+    }
+
+    public function getInvoiceDetails(Request $request)
+    {
+        $field = $request->invoiceno;
+        // $invoiceno = $field['invoiceno'];
+        $iqctable = DB::connection($this->mysql)->table('tbl_wbs_material_receiving as a')
+                            ->join('tbl_wbs_material_receiving_batch as b','b.wbs_mr_id', '=','a.receive_no')
+                            ->join('tbl_wbs_material_receiving_summary as c','c.wbs_mr_id','=','a.receive_no')
+                            ->where('a.invoice_no','=',$field)
+                            ->select('b.item')
+                            ->distinct()
+                            ->get();
+        return $iqctable;
+    }
+
+    public function getpartcode(Request $request)
+    {
+        $partcode = $request->partcode;
+        $invoiceno =  $request->invoiceno;
+        $iqctable = DB::connection($this->mysql)->table('tbl_wbs_material_receiving as a')
+                            ->join('tbl_wbs_material_receiving_batch as b','b.wbs_mr_id', '=','a.receive_no')
+                            ->join('tbl_wbs_material_receiving_summary as c','c.wbs_mr_id','=','a.receive_no')
+                            ->where('a.invoice_no','=',$invoiceno)
+                            ->where('c.item','=',$partcode)
+                            ->select('c.item_desc','b.supplier','b.box','b.lot_no','b.qty')
+                            ->distinct()
+                            ->get();
+        return $iqctable;
+    }
+
+    public function getOQCInspectionData()
+    {
+        $data = OQCInspection::all();
+        return Datatables::of($data)->make(true);
+    }
+
+    public function oqcdbdelete(Request $request){  
+        $tray = $request->tray;
+        $traycount = $request->traycount;  
+        if($traycount > 0){
+            $ok = DB::connection($this->mysql)->table('oqc_inspections')->wherein('modid',$tray)->delete();
+            $ok = DB::connection($this->mysql)->table('oqc_inspections_mod')->wherein('modid',$tray)->delete();
+        } 
+    }
+
+    public function oqcsave(Request $request){
+        $status = $request->status;
+        $modid = $request->modid;
+        $judgement = $request->judgement;
+
+        if($status == "ADD"){
+            $lot_rejected = '';
+            $nod = '';
+           
+            if($request->lotaccepted == 0){
+                $lot_rejected = 1;
+                $nod = $request->nofdefects;
+            }else{
+                $lot_rejected = 0;
+                $nod = 0;
+            }
+            $ok = DB::connection($this->mysql)->table("oqc_inspections")
+            ->insert([
+                'assembly_line'=>$request->assemblyline,
+                'lot_no'=>$request->lotno,
+                'app_date'=>$this->convertDate($request->appdate,'Y-m-d'),
+                'app_time'=>$request->apptime,
+                'prod_category'=>$request->prodcategory,
+                'po_no'=>$request->pono,
+                'device_name'=>$request->seriesname,
+                'customer'=>$request->customer,
+                'po_qty'=>$request->poqty,
+                'family'=>$request->family,
+                'type_of_inspection'=>$request->typeofinspection,
+                'severity_of_inspection'=> $request->severityofinspection,
+                'inspection_lvl'=> $request->inspectionlvl,
+                'aql'=>$request->aql,
+                'accept'=>$request->accept,
+                'reject'=>$request->reject,
+                'date_inspected'=> $this->convertDate($request->dateinspected,'Y-m-d'),
+                'ww'=>$request->ww,
+                'fy'=>$request->fy,
+                'shift'=>$request->shift,
+                'time_ins_from'=>$request->timeinsfrom,
+                'time_ins_to'=>$request->timeinsto,
+                'inspector'=>$request->inspector,
+                'submission'=>$request->submission,
+                'coc_req'=>$request->cocreq,
+                'judgement'=>$request->judgement,
+                'lot_qty'=> $request->lotqty,
+                'sample_size'=>$request->samplesize,
+                'lot_inspected'=>$request->lotinspected,
+                'lot_accepted'=>$request->lotaccepted,
+                'lot_rejected'=>$lot_rejected,
+                'num_of_defects'=>$nod,
+                'remarks'=>$request->remarks,
+                'dbcon'=>$request->dbcon,
+                'modid'=>$modid,
+                'type'=> $request->type,
+                'created_at' => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            ]);  
+            if($ok){
+                $data['status'] = 'saved';
+                return $data;
+            }else{
+                $data['status'] = 'error';
+                return $data;
+            }
+        }
+        if($status == "EDIT"){
+            $countlot = $request->count_lot;
+            $pono = $request->pono;
+            $lotno = $request->lotno;
+            $sub = $request->submission;
+            $judgement = $request->judgement;
+            $lotchanged = $request->lotchanged;
+            if($lotchanged == "CHANGED"){
+                if($judgement == "Accept"){
+                    $lot_rejected = '';
+                    if($request->lotaccepted == 0){
+                        $lot_rejected = 1;
+                    }else{
+                        $lot_rejected = 0;
+                    }
+                    DB::connection($this->mysql)->table("oqc_inspections_mod")->where('pono',$pono)->where('lotno',$lotno)->delete();
+                    DB::connection($this->mysql)->table("oqc_inspections")->where('po_no',$pono)->where('lot_no',$lotno)->where('submission','!=',"1st")->delete();
+                    $updated = DB::connection($this->mysql)->table("oqc_inspections")
+                        ->where('po_no',$pono)
+                        ->where('lot_no',$lotno)
+                        ->where('submission',$sub)
+                        ->update(array(
+                            'assembly_line'=>$request->assemblyline,
+                            'lot_no'=>$request->lotno,
+                            'app_date'=>$this->convertDate($request->appdate,'Y-m-d'),
+                            'app_time'=>$request->apptime,
+                            'prod_category'=>$request->prodcategory,
+                            'po_no'=>$request->pono,
+                            'device_name'=>$request->seriesname,
+                            'customer'=>$request->customer,
+                            'po_qty'=>$request->poqty,
+                            'family'=>$request->family,
+                            'type_of_inspection'=>$request->typeofinspection,
+                            'severity_of_inspection'=> $request->severityofinspection,
+                            'inspection_lvl'=> $request->inspectionlvl,
+                            'aql'=>$request->aql,
+                            'accept'=>$request->accept,
+                            'reject'=>$request->reject,
+                            'date_inspected'=> $this->convertDate($request->dateinspected,'Y-m-d'),
+                            'ww'=>$request->ww,
+                            'fy'=>$request->fy,
+                            'shift'=>$request->shift,
+                            'time_ins_from'=>$request->timeinsfrom,
+                            'time_ins_to'=>$request->timeinsto,
+                            'inspector'=>$request->inspector,
+                            'submission'=>$request->submission,
+                            'coc_req'=>$request->cocreq,
+                            'judgement'=>$request->judgement,
+                            'lot_qty'=> $request->lotqty,
+                            'sample_size'=>$request->samplesize,
+                            'lot_inspected'=>$request->lotinspected,
+                            'lot_accepted'=>$request->lotaccepted,
+                            'lot_rejected'=>$lot_rejected,
+                            'num_of_defects'=>0,
+                            'remarks'=>$request->remarks,
+                            'dbcon'=>$request->dbcon,
+                            'modid'=>$modid,
+                            'type'=> $request->type,
+                            'updated_at' => date('Y-m-d H:i:s'),
+                        ));  
+                    if($updated){
+                        $data['status'] = 'updated';
+                        return $data;
+                    }else{
+                        $data['status'] = 'error';
+                        return $data;
+                    }
+                } else {
+                    $lot_rejected = '';
+                    if($request->lotaccepted == 0){
+                        $lot_rejected = 1;
+                    }else{
+                        $lot_rejected = 0;
+                    }
+                    $updated = DB::connection($this->mysql)->table("oqc_inspections")
+                        ->where('po_no',$pono)
+                        ->where('lot_no',$lotno)
+                        ->where('submission',$sub)
+                        ->update(array(
+                            'assembly_line'=>$request->assemblyline,
+                            'lot_no'=>$request->lotno,
+                            'app_date'=>$this->convertDate($request->appdate,'Y-m-d'),
+                            'app_time'=>$request->apptime,
+                            'prod_category'=>$request->prodcategory,
+                            'po_no'=>$request->pono,
+                            'device_name'=>$request->seriesname,
+                            'customer'=>$request->customer,
+                            'po_qty'=>$request->poqty,
+                            'family'=>$request->family,
+                            'type_of_inspection'=>$request->typeofinspection,
+                            'severity_of_inspection'=> $request->severityofinspection,
+                            'inspection_lvl'=> $request->inspectionlvl,
+                            'aql'=>$request->aql,
+                            'accept'=>$request->accept,
+                            'reject'=>$request->reject,
+                            'date_inspected'=> $this->convertDate($request->dateinspected,'Y-m-d'),
+                            'ww'=>$request->ww,
+                            'fy'=>$request->fy,
+                            'shift'=>$request->shift,
+                            'time_ins_from'=>$request->timeinsfrom,
+                            'time_ins_to'=>$request->timeinsto,
+                            'inspector'=>$request->inspector,
+                            'submission'=>$request->submission,
+                            'coc_req'=>$request->cocreq,
+                            'judgement'=>$request->judgement,
+                            'lot_qty'=> $request->lotqty,
+                            'sample_size'=>$request->samplesize,
+                            'lot_inspected'=>$request->lotinspected,
+                            'lot_accepted'=>$request->lotaccepted,
+                            'lot_rejected'=>$lot_rejected,
+                            'num_of_defects'=>$request->nofdefects,
+                            'remarks'=>$request->remarks,
+                            'dbcon'=>$request->dbcon,
+                            'modid'=>$modid,
+                            'type'=> $request->type,
+                            'updated_at' => date('Y-m-d H:i:s'),
+                    ));   
+
+                    if($updated){
+                        $data['status'] = 'updated';
+                        return $data;
+                    }else{
+                        $data['status'] = 'error';
+                        return $data;
+                    }
+                }            
+            } else {
+                $lot_rejected = '';
+                if($request->lotaccepted == 0){
+                    $lot_rejected = 1;
+                }else{
+                    $lot_rejected = 0;
+                }
+
+                $updated = DB::connection($this->mysql)->table("oqc_inspections")
+                ->where('id',$request->id)
+                ->update(array(
+                    'assembly_line'=>$request->assemblyline,
+                    'lot_no'=>$request->lotno,
+                    'app_date'=>$this->convertDate($request->appdate,'Y-m-d'),
+                    'app_time'=>$request->apptime,
+                    'prod_category'=>$request->prodcategory,
+                    'po_no'=>$request->pono,
+                    'device_name'=>$request->seriesname,
+                    'customer'=>$request->customer,
+                    'po_qty'=>$request->poqty,
+                    'family'=>$request->family,
+                    'type_of_inspection'=>$request->typeofinspection,
+                    'severity_of_inspection'=> $request->severityofinspection,
+                    'inspection_lvl'=> $request->inspectionlvl,
+                    'aql'=>$request->aql,
+                    'accept'=>$request->accept,
+                    'reject'=>$request->reject,
+                    'date_inspected'=> $this->convertDate($request->dateinspected,'Y-m-d'),
+                    'ww'=>$request->ww,
+                    'fy'=>$request->fy,
+                    'shift'=>$request->shift,
+                    'time_ins_from'=>$request->timeinsfrom,
+                    'time_ins_to'=>$request->timeinsto,
+                    'inspector'=>$request->inspector,
+                    'submission'=>$request->submission,
+                    'coc_req'=>$request->cocreq,
+                    'judgement'=>$request->judgement,
+                    'lot_qty'=> $request->lotqty,
+                    'sample_size'=>$request->samplesize,
+                    'lot_inspected'=>$request->lotinspected,
+                    'lot_accepted'=>$request->lotaccepted,
+                    'lot_rejected'=>$lot_rejected,
+                    'num_of_defects'=>$request->nofdefects,
+                    'remarks'=>$request->remarks,
+                    'dbcon'=>$request->dbcon,
+                    'modid'=>$modid,
+                    'type'=> $request->type,
+                    'updated_at' => date('Y-m-d H:i:s'),
+                ));   
+
+                if($updated){
+                    $data['status'] = 'updated';
+                    return $data;
+                }else{
+                    $data['status'] = 'error';
+                    return $data;
+                }
+            }  
+        }    
+    }
+
+    public function oqcmodinspectionsave(Request $request){
+        $mod = $request->mod;
+        $qty = $request->qty;
+        $pono = $request->pono;
+        $device = $request->device;
+        $lotno = $request->lotno;
+        $submission = $request->submission;
+        $status = $request->status;
+        $modid = $request->modid;
+        $newmod = '';
+        $newqty = '';
+        if($request->lotaccepted == 0){
+            $newmod = $mod;
+            $newqty = $qty;
+        }else{
+            $newmod = "";
+            $newqty = "";
+        }
+        if($status == "ADD"){
+            DB::connection($this->mysql)->table('oqc_inspections_mod')
+                ->insert([
+                    'pono'=>$pono,
+                    'device'=>$device,
+                    'lotno'=>$lotno,
+                    'submission'=>$submission,
+                    'mod1'=>$newmod,
+                    'qty'=>$newqty,
+                    'modid'=>$modid,
+                    'created_at' => date('Y-m-d H:i:s'),
+                    'updated_at' => date('Y-m-d H:i:s'),
+            ]);
+        }
+        if($status == "EDIT"){
+            $id = $request->id;
+            DB::connection($this->mysql)->table('oqc_inspections_mod')
+                ->where('id','=',$id)
+                ->update(array(
+                    'pono'=>$pono,
+                    'device'=>$device,
+                    'lotno'=>$lotno,
+                    'submission'=>$submission,
+                    'mod1'=>$newmod,
+                    'qty'=>$newqty,
+                    'modid'=>$modid,
+                    'updated_at' => date('Y-m-d H:i:s'),
+            ));
+        }
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')
+                        ->where('pono',$pono)
+                        ->where('lotno',$lotno)
+                        ->where('submission',$submission)
+                        ->select('qty','mod1','id')
+                        ->get();
+        return $table;
+    }
+
+    public function oqcmodinspectionedit(Request $request){
+        $id = $request->id;
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')->where('id','=',$id)->get();   
+        return $table;
+    }
+
+    public function oqcmodinspectiondelete(Request $request){  
+        $tray = $request->tray;
+        $traycount = $request->traycount;  
+       /* return $tray;  */
+        if($traycount > 0){
+            $ok = DB::connection($this->mysql)->table('oqc_inspections_mod')->wherein('id',$tray)->delete();
+        }
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')->where('pono','=',$request->pono)->where('lotno','=',$request->lotno)->get();   
+       return $table;
+    }
+
+    public function get_no_of_defectives(Request $request){
+        $pono = $request->pono;
+        $lotno = $request->lotno;
+        $sub = $request->submission;
+
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')
+                        ->where('pono',$pono)
+                        ->where('lotno',$lotno)
+                        ->where('submission',$sub)
+                        ->select('mod1',DB::raw("SUM(qty) as qty"))
+                        ->get();
+        return $table;
+    }
+
+    public function displayoqcmod(Request $request){
+        $pono = $request->pono;
+        $lotno = $request->lotno;
+        $sub = $request->submission;
+
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')
+                        ->where('pono',$pono)
+                        ->where('lotno',$lotno)
+                        ->where('submission',$sub)
+                        ->select('qty','mod1','id')
+                        ->get();
+        return $table;
+    }
+    
+    public function searchby(Request $request){
+        $datefrom = $request->datefrom;
+        $dateto = $request->dateto;
+        $pono = $request->pono;
+
+        if($pono == ""){
+            $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                    ->leftJoin('oqc_inspections_mod as b','a.po_no','=','b.pono')
+                    ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission',DB::raw("SUM(a.lot_qty) as lot_qty"),'a.sample_size','a.num_of_defects','a.lot_no',DB::raw('b.mod1'),DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks' ,'a.assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon','a.modid')
+                    ->whereBetween('date_inspected', [$datefrom,$dateto])
+                    ->groupBy('a.po_no','a.lot_no','a.submission')
+                    ->orderBy('a.lot_qty')
+                    ->get();   
+        }else{
+            $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                    ->leftJoin('oqc_inspections_mod as b','a.po_no','=','b.pono')
+                    ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission',DB::raw("SUM(a.lot_qty) as lot_qty"),'a.sample_size','a.num_of_defects','a.lot_no',DB::raw('b.mod1'),DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks' ,'a.assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon','a.modid')                    
+                    ->where('po_no',$pono)
+                    ->whereBetween('date_inspected', [$datefrom,$dateto])
+                    ->groupBy('a.po_no','a.lot_no','a.submission')
+                    ->orderBy('a.lot_qty')
+                    ->get();   
+        }
+        if($datefrom == "" && $dateto == ""){
+            $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                    ->leftJoin('oqc_inspections_mod as b','a.po_no','=','b.pono')
+                    ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission',DB::raw("SUM(a.lot_qty) as lot_qty"),'a.sample_size','a.num_of_defects','a.lot_no',DB::raw('b.mod1'),DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks' ,'a.assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon','a.modid')
+                    ->where('po_no',$pono)
+                    ->groupBy('a.po_no','a.lot_no','a.submission')
+                    ->orderBy('a.lot_qty')
+                    ->get();     
+        }
+        
+        return $table;
+    }
+
+    public function getOQCreport(Request $req)
+    {
+        $date = '';
+        $po = '';
+        $sums = [];
+
+        if ($req->datefrom !== '' || !empty($req->datefrom)) {
+            $date = " AND a.date_inspected BETWEEN '".$this->convertDate($req->datefrom,'Y-m-d')."' AND '".$this->convertDate($req->dateto,'Y-m-d')."'";
+        }
+
+        if ($req->po !== '' || !empty($req->po)) {
+            $po = " AND a.po_no = '".$req->po."'";
+            $sums = DB::connection($this->mysql)->table('oqc_inspections')
+                        ->select(DB::raw("SUM(lot_qty) AS lot_qty"),'po_qty')
+                        ->whereRaw('1=1'.$po)
+                        ->where('submission','=',"1st")
+                        ->first();
+        }
+
+        $details = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.modid','=','b.modid')
+                ->whereRaw("1=1".$po.$date)
+                ->groupBy('a.po_no','a.lot_no','a.submission')
+                ->orderBy('id','desc')
+                ->select('a.id'
+                    ,DB::raw('a.fy as fy')
+                    ,DB::raw('a.ww as ww')
+                    ,DB::raw('a.date_inspected as date_inspected')
+                    ,DB::raw('a.shift as shift')
+                    ,DB::raw('a.time_ins_from as time_ins_from')
+                    ,DB::raw('a.time_ins_to as time_ins_to')
+                    ,DB::raw('a.submission as submission')
+                    ,DB::raw('a.lot_qty as lot_qty')
+                    ,DB::raw('a.sample_size as sample_size')
+                    ,DB::raw('a.num_of_defects as num_of_defects')
+                    ,DB::raw('a.lot_no as lot_no')
+                    ,DB::raw('b.mod1 as mod1')
+                    ,DB::raw("IFNULL(SUM(b.qty),0) as qty")
+                    ,DB::raw('a.judgement as judgement')
+                    ,DB::raw('a.inspector as inspector')
+                    ,DB::raw('a.remarks as remarks')
+                    ,DB::raw('a.assembly_line as assembly_line')
+                    ,DB::raw('a.app_date as app_date')
+                    ,DB::raw('a.app_time as app_time')
+                    ,DB::raw('a.prod_category as prod_category')
+                    ,DB::raw('a.po_no as po_no')
+                    ,DB::raw('a.device_name as device_name')
+                    ,DB::raw('a.customer as customer')
+                    ,DB::raw('a.po_qty as po_qty')
+                    ,DB::raw('a.family as family')
+                    ,DB::raw('a.type_of_inspection as type_of_inspection')
+                    ,DB::raw('a.severity_of_inspection as severity_of_inspection')
+                    ,DB::raw('a.inspection_lvl as inspection_lvl')
+                    ,DB::raw('a.aql as aql')
+                    ,DB::raw('a.accept as accept')
+                    ,DB::raw('a.reject as reject')
+                    ,DB::raw('a.coc_req as coc_req')
+                    ,DB::raw('a.lot_inspected as lot_inspected')
+                    ,DB::raw('a.lot_accepted as lot_accepted')
+                    ,DB::raw('a.dbcon as dbcon')
+                    ,DB::raw("IF(judgement = 'Accept','NDF',a.modid) as modid")
+                    ,DB::raw('a.type as type'))
+                ->get();
+        
+
+        $dt = Carbon::now();
+        $company_info = $this->com->getCompanyInfo();
+        $date = substr($dt->format('  M j, Y A'), 2);
+
+        $data = [
+            'company_info' => $company_info,
+            'details' => $details,
+            'sums' => $sums,
+            'date' => $date,
+            'po' => $req->po
+        ];
+
+        $pdf = PDF::loadView('pdf.oqc', $data)
+                    ->setPaper('A4')
+                    ->setOption('margin-top', 10)->setOption('margin-bottom', 5)
+                    ->setOrientation('landscape');
+
+        return $pdf->inline('OQC_Inspection_'.Carbon::now());
+    }
+
+    public function getOQCreportexcel(Request $req)
+    {
+        $dt = Carbon::now();
+        $dates = substr($dt->format('Ymd'), 2);
+        
+        Excel::create('OQC_Inspection_Report'.$dates, function($excel) use($req)
+        {
+            $excel->sheet('Sheet1', function($sheet) use($req)
+            {
+                $date = '';
+                $po = '';
+                $sums = [];
+
+                if ($req->datefrom !== '' || !empty($req->datefrom)) {
+                    $date = " AND a.date_inspected BETWEEN '".$this->convertDate($req->datefrom,'Y-m-d')."' AND '".$this->convertDate($req->dateto,'Y-m-d')."'";
+                }
+
+                if ($req->po !== '' || !empty($req->po)) {
+                    $po = " AND a.po_no = '".$req->po."'";
+                    $sums = DB::connection($this->mysql)->table('oqc_inspections')
+                                ->select(DB::raw("SUM(lot_qty) AS lot_qty"),'po_qty')
+                                ->whereRaw('1=1'.$po)
+                                ->where('submission','=',"1st")
+                                ->first();
+                                
+                    $sheet->cell('C6', $details[0]->device_name);
+                    $sheet->cell('C7', $details[0]->prod_category);
+                    $sheet->cell('C8', $details[0]->po_no);
+                    $sheet->cell('C9', $details[0]->po_qty);
+                    $sheet->cell('F6', $details[0]->customer);
+                    $sheet->cell('F7', $details[0]->coc_req);
+                    $sheet->cell('F8', $details[0]->severity_of_inspection);
+                    $sheet->cell('F9', $details[0]->inspection_lvl);
+                    $sheet->cell('I6', $details[0]->aql);
+                    $sheet->cell('I7', $details[0]->accept);
+                    $sheet->cell('I8', $details[0]->reject);
+                }
+
+                $details = DB::connection($this->mysql)->table('oqc_inspections as a')
+                        ->leftJoin('oqc_inspections_mod as b','a.modid','=','b.modid')
+                        ->whereRaw("1=1".$po.$date)
+                        ->groupBy('a.po_no','a.lot_no','a.submission')
+                        ->orderBy('id','desc')
+                        ->select('a.id'
+                            ,DB::raw('a.fy as fy')
+                            ,DB::raw('a.ww as ww')
+                            ,DB::raw('a.date_inspected as date_inspected')
+                            ,DB::raw('a.shift as shift')
+                            ,DB::raw('a.time_ins_from as time_ins_from')
+                            ,DB::raw('a.time_ins_to as time_ins_to')
+                            ,DB::raw('a.submission as submission')
+                            ,DB::raw('a.lot_qty as lot_qty')
+                            ,DB::raw('a.sample_size as sample_size')
+                            ,DB::raw('a.num_of_defects as num_of_defects')
+                            ,DB::raw('a.lot_no as lot_no')
+                            ,DB::raw('b.mod1 as mod1')
+                            ,DB::raw("IFNULL(SUM(b.qty),0) as qty")
+                            ,DB::raw('a.judgement as judgement')
+                            ,DB::raw('a.inspector as inspector')
+                            ,DB::raw('a.remarks as remarks')
+                            ,DB::raw('a.assembly_line as assembly_line')
+                            ,DB::raw('a.app_date as app_date')
+                            ,DB::raw('a.app_time as app_time')
+                            ,DB::raw('a.prod_category as prod_category')
+                            ,DB::raw('a.po_no as po_no')
+                            ,DB::raw('a.device_name as device_name')
+                            ,DB::raw('a.customer as customer')
+                            ,DB::raw('a.po_qty as po_qty')
+                            ,DB::raw('a.family as family')
+                            ,DB::raw('a.type_of_inspection as type_of_inspection')
+                            ,DB::raw('a.severity_of_inspection as severity_of_inspection')
+                            ,DB::raw('a.inspection_lvl as inspection_lvl')
+                            ,DB::raw('a.aql as aql')
+                            ,DB::raw('a.accept as accept')
+                            ,DB::raw('a.reject as reject')
+                            ,DB::raw('a.coc_req as coc_req')
+                            ,DB::raw('a.lot_inspected as lot_inspected')
+                            ,DB::raw('a.lot_accepted as lot_accepted')
+                            ,DB::raw('a.dbcon as dbcon')
+                            ,DB::raw("IF(judgement = 'Accept','NDF',a.modid) as modid")
+                            ,DB::raw('a.type as type'))
+                        ->get();
+                
+
+                $dt = Carbon::now();
+                $com_info = $this->com->getCompanyInfo();
+
+                $date = substr($dt->format('  M j, Y A'), 2);
+       
+                $sheet->setHeight(1, 15);
+                $sheet->mergeCells('A1:P1');
+                $sheet->cells('A1:P1', function($cells) {
+                    $cells->setAlignment('center');
+                });
+                $sheet->cell('A1',$com_info['name']);
+
+                $sheet->setHeight(2, 15);
+                $sheet->mergeCells('A2:P2');
+                $sheet->cells('A2:P2', function($cells) {
+                    $cells->setAlignment('center');
+                });
+                $sheet->cell('A2',$com_info['address']);
+
+                $sheet->setHeight(4, 20);
+                $sheet->mergeCells('A4:P4');
+                $sheet->cells('A4:P4', function($cells) {
+                    $cells->setAlignment('center');
+                    $cells->setFont([
+                        'family'     => 'Calibri',
+                        'size'       => '14',
+                        'bold'       =>  true,
+                        'underline'  =>  true
+                    ]);
+                });
+                $sheet->cell('A4',"MATERIAL KITTING LIST SUMMARY");
+
+                $sheet->setHeight(6, 20);
+                $sheet->setHeight(7, 20);
+                $sheet->setHeight(8, 20);
+                $sheet->setHeight(9, 20);
+
+                $sheet->cell('B6',"Service Name");
+                $sheet->cell('B7',"Category");
+                $sheet->cell('B8',"P.O Number");
+                $sheet->cell('B9',"P.O Quantity");
+
+                $sheet->cell('E6',"Customer Name");
+                $sheet->cell('E7',"COC Requirements");
+                $sheet->cell('E8',"Severity of Inspection");
+                $sheet->cell('E9',"Inspection Level");
+
+                $sheet->cell('H6',"AQL");
+                $sheet->cell('H7',"Ac");
+                $sheet->cell('H8',"Re");
+
+                $sheet->setHeight(11, 15);
+                $sheet->cells('A11:p11', function($cells) {
+                    $cells->setFont([
+                        'family'     => 'Calibri',
+                        'size'       => '12',
+                        'bold'       =>  true,
+                    ]);
+                    // Set all borders (top, right, bottom, left)
+                    $cells->setBorder('solid', 'solid', 'solid', 'solid');
+                });
+
+
+
+                $sheet->cell('B11',"FY-WW");
+                $sheet->cell('C11',"Date Inspected");
+                $sheet->cell('D11',"Device Name");
+                $sheet->cell('E11',"From");
+                $sheet->cell('F11',"To");
+                $sheet->cell('G11',"# of Sub");
+                $sheet->cell('H11',"Lot Size");
+                $sheet->cell('I11',"Sample Size");
+                $sheet->cell('J11',"No of Defective");
+                $sheet->cell('K11',"Lot No");
+                $sheet->cell('L11',"Mode of Defects");
+                $sheet->cell('M11',"Qty");
+                $sheet->cell('N11',"Judgement");
+                $sheet->cell('O11',"Inspector");
+                $sheet->cell('P11',"Remarks");
+
+                $row = 12;
+
+                foreach ($details as $key => $qc) {
+                    $sheet->cell('B'.$row, $qc->fy.' - '.$qc->ww);
+                    $sheet->cell('C'.$row, $qc->date_inspected);
+                    $sheet->cell('D'.$row, $qc->device_name);
+                    $sheet->cell('E'.$row, $qc->time_ins_from);
+                    $sheet->cell('F'.$row, $qc->time_ins_to);
+                    $sheet->cell('G'.$row, $qc->submission);
+                    $sheet->cell('H'.$row, $qc->lot_qty);
+                    $sheet->cell('I'.$row, $qc->sample_size);
+                    $sheet->cell('J'.$row, $qc->num_of_defects);
+                    $sheet->cell('K'.$row, $qc->lot_no);
+                    $sheet->cell('L'.$row, $qc->modid);
+                    $sheet->cell('M'.$row, $qc->num_of_defects);
+                    $sheet->cell('N'.$row, $qc->judgement);
+                    $sheet->cell('O'.$row, $qc->inspector);
+                    $sheet->cell('P'.$row, $qc->remarks);
+
+                    $sheet->row($row, function ($row) {
+                        $row->setFontFamily('Calibri');
+                        $row->setFontSize(11);
+                    });
+                    $sheet->setHeight($row,20);
+                    $row++;
+                }
+
+                $row++;
+
+                $sheet->row($row, function ($row) {
+                    $row->setFontFamily('Calibri');
+                    $row->setFontSize(10);
+                    $row->setAlignment('center');
+                });
+                $sheet->setHeight($row,20);
+
+                $lot_qty = 0;
+                $balance = 0;
+                if(count($sums) > 0) {
+                    $lot_qty = $sums->lot_qty;
+                    $balance = $sums->po_qty - $sums->lot_qty;
+                }
+
+                $sheet->cell('B'.$row, "Total Qty:");
+                $sheet->cell('C'.$row, $lot_qty);
+                $sheet->cell('H'.$row, "Balance:");
+                $sheet->cell('I'.$row, $balance);
+                $sheet->cell('O'.$row, "Date:");
+                $sheet->cell('P'.$row, $date);
+            });
+
+        })->download('xls');  
+    }
+
+    public function oqcdbgroupby(Request $request){        
+        $datefrom = $request->data['datefrom'];
+        $dateto = $request->data['dateto'];
+        $g1 = $request->data['g1'];
+        $g2 = $request->data['g2'];
+        $g3 = $request->data['g3'];
+        $g1content = $request->data['g1content'];
+        $g2content = $request->data['g2content'];
+        $g3content = $request->data['g3content'];
+        $field='';
+        if($g1){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1)
+                ->orderBy('a.lot_qty')
+                ->get();    
+        }
+        if($g1 && $g1content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->where('a.'.$g1,'=',$g1content)
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        if($g1 && $g2){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1,'a.'.$g2)
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        if($g1 && $g1content && $g2){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->where('a.'.$g1,'=',$g1content)
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1,'a.'.$g2)
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        if($g1 && $g1content && $g2 && $g2content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->where('a.'.$g1,'=',$g1content)
+                ->where('a.'.$g2,'=',$g2content)
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1,'a.'.$g2)
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        if($g1 && $g2 && $g3){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1,'a.'.$g2,'a.'.$g3)
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        if($g1 && $g1content && $g2 && $g2content && $g3 && $g3content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->where('a.'.$g1,'=',$g1content)
+                ->where('a.'.$g2,'=',$g2content)
+                ->where('a.'.$g3,'=',$g3content)
+                ->select('a.id','a.fy','a.ww','a.date_inspected','a.shift','a.time_ins_from','a.time_ins_to','a.submission','a.lot_qty','a.sample_size','a.num_of_defects','a.lot_no','b.mod1',DB::raw("SUM(b.qty) as qty"),'a.judgement','a.inspector','a.remarks','assembly_line','a.app_date','a.app_time','a.prod_category','a.po_no','a.device_name','a.customer','a.po_qty','a.family','a.type_of_inspection','a.severity_of_inspection','a.inspection_lvl','a.aql','a.accept','a.reject','a.coc_req','a.lot_inspected','a.lot_accepted','a.dbcon')
+                ->whereBetween('a.date_inspected',[$datefrom, $dateto])
+                ->groupBy('a.'.$g1,'a.'.$g2,'a.'.$g3)
+                ->orderBy('a.lot_qty')
+                ->get();        
+        }
+        return $field;
+    }
+
+    public function oqcdbselectgroupby1(Request $request){        
+        $g1 = $request->data;
+        $table = DB::connection($this->mysql)->table('oqc_inspections')
+                ->select($g1)
+                ->distinct()
+                ->get();
+
+        return $table;
+    }
+
+    public function getlarlrrdppm(Request $request){
+        $datefrom = $request->datefrom;
+        $dateto = $request->dateto;
+        $g1 = $request->g1;
+        $g1content = $request->g1content;
+        $g2 = $request->g2;
+        $g2content = $request->g2content;
+        $g3 = $request->g3;
+        $g3content = $request->g3content;
+        $status = $request->status;
+
+        if($g1){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1)
+                ->get();    
+        }
+        if($g1 && $g1content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->where($g1,$g1content)
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1)
+                ->get();    
+        }
+
+        if($g1 && $g2){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1,$g2)
+                ->get();    
+        }
+        if($g1 && $g1content && $g2){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->where($g1,$g1content)
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1,$g2)
+                ->get();    
+        }
+        if($g1 && $g1content && $g2 && $g2content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->where($g1,$g1content)
+                ->where($g2,$g2content)
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1,$g2)
+                ->get();    
+        }
+        if($g1 && $g1content && $g2 && $g2content && $g3){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->where($g1,$g1content)
+                ->where($g2,$g2content)
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1,$g2,$g3)
+                ->get();    
+        }
+        if($g1 && $g1content && $g2 && $g2content && $g3 && $g3content){
+            $field = DB::connection($this->mysql)->table('oqc_inspections')
+                ->whereBetween('date_inspected',[$datefrom, $dateto])
+                ->where($g1,$g1content)
+                ->where($g2,$g2content)
+                ->where($g3,$g3content)
+                ->select(DB::raw("SUM(sample_size) AS sample_size")
+                ,DB::raw("SUM(lot_qty) AS lot_qty")
+                ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+                ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+                ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+                ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+                ,'fy','ww','date_inspected','shift','time_ins_from','time_ins_to','submission','lot_no','judgement','inspector','remarks','assembly_line','customer','po_no','aql','prod_category','family','device_name')
+                ->groupBy($g1,$g2,$g3)
+                ->get();    
+        }
+
+        return $field;
+    }
+
+    public function totallarlrrdppm(Request $request){
+        $datefrom = $request->datefrom;
+        $dateto = $request->dateto;
+        $g1 = $request->g1;
+        $g1content = $request->g1content;
+        $g2 = $request->g2;
+        $g2content = $request->g2content;
+        $g3 = $request->g3;
+        $g3content = $request->g3content;
+        $status = $request->status;
+        
+        $field = DB::connection($this->mysql)->table('oqc_inspections')
+        ->whereBetween('date_inspected',[$datefrom, $dateto])
+        ->select(DB::raw("SUM(sample_size) AS sample_size")
+            ,DB::raw("SUM(lot_qty) AS lot_qty")
+            ,DB::raw("SUM(num_of_defects) AS num_of_defects")
+            ,DB::raw("SUM(lot_accepted) AS lot_accepted")
+            ,DB::raw("SUM(lot_rejected) AS lot_rejected")
+            ,DB::raw("SUM(lot_inspected) AS lot_inspected")
+            ,'submission')
+        ->groupBy('submission')->get();    
+     
+        return $field;
+    } 
+
+    public function countdefects(Request $request){
+        $pono = $request->pono;
+        $table = DB::connection($this->mysql)->table('oqc_inspections_mod')->where('pono',$pono)->count();
+        return $table;
+    }
+
+    public function getmodcount(Request $request){
+        $output = [];
+        $pono = $request->newpono;     
+        $lot = $request->lot;                                                                                                                                                       
+        $sub = $request->sub;          
+        $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.modid','=','b.modid')
+                ->select('a.po_no','b.mod1','a.lot_no','a.submission')
+                ->where('b.pono',$pono)
+                ->where('a.lot_no',$lot)
+                ->where('a.submission',$sub)
+                ->get();
+        foreach ($table as $key => $data) {
+            $output['pono'][$key] = $pono;
+            $output['mod'][$key] = $data->mod1;
+            $output['lot_no'][$key] = $data->lot_no;
+            $output['submission'][$key] = $data->submission;
+        }
+
+        return $output;
+    }
+
+    public function getmodcounts(Request $request){
+        $hdstatus = $request->report_status;
+        $datefrom = $request->datefrom;
+        $dateto = $request->dateto;
+        $output = []; 
+        $table = '';                          
+        if($hdstatus == "GROUPBY"){
+            $table = DB::connection($this->mysql)->table('oqc_inspections_mod')
+                ->select('pono',DB::raw("(GROUP_CONCAT(mod1 SEPARATOR ' , ')) AS mod1"),DB::raw("(GROUP_CONCAT(lotno SEPARATOR ' , ')) AS lot_no"),'submission','qty')
+                ->groupBy('pono','submission','device')
+                ->get();    
+               
+        } else {
+            $table = DB::connection($this->mysql)->table('oqc_inspections as a')
+                ->leftJoin('oqc_inspections_mod as b','a.lot_no','=','b.lotno')
+                ->select('a.po_no','b.mod1','a.lot_no','a.submission')
+                ->where('b.pono',$request->pono)
+                ->where('a.lot_no',$request->lotno)
+                ->where('a.submission',$request->subs)
+                ->get();    
+        }
+            
+        foreach ($table as $key => $data) {
+            $output['mod'][$key] = $data->mod1;
+            $output['lotno'][$key] = $data->lot_no;
+        }
+        return $output;
+    }
+
+    public function time(Request $r)
+    {   
+        $timefrom = $this->convertStringToTime($r->timefrom);
+        $timeto = $this->convertStringToTime($r->timeto);
+
+        if($timefrom >= $this->convertStringToTime("7:30 AM") && $timeto <= $this->convertStringToTime("7:29 PM")) {
+            return "Shift A";
+        } else {
+            return "Shift B";
+        } 
+    }
+
+    private function convertStringToTime($time)
+    {
+        $dtime = Carbon::createFromFormat("G:i A", $time);
+        $timestamp = $dtime->getTimestamp();
+
+        return $timestamp;
+    }
+
+    public function countlotno(Request $request){
+        $pono = $request->pono;
+        $lotno = $request->lotno;
+
+        $count = DB::connection($this->mysql)->table('oqc_inspections')->where('po_no',$pono)->where('lot_no',$lotno)->count();
+        return $count;
+    }
+
+}

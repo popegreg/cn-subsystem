@@ -1,0 +1,240 @@
+<?php
+/*******************************************************************************
+     Copyright (c) <Company Name> All rights reserved.
+
+     FILE NAME: PoChangeDeliveryController.php
+     MODULE NAME:  [3008-1] PO Status : Change Delivery
+     CREATED BY: MESPINOSA
+     DATE CREATED: 2016.05.03
+     REVISION HISTORY :
+
+     VERSION     ROUND    DATE           PIC          DESCRIPTION
+     100-00-01   1     2016.05.03     MESPINOSA       Initial Draft
+     100-00-02   1     2016.05.18     MESPINOSA       Retrieve data from MySQL.
+*******************************************************************************/
+?>
+<?php
+namespace App\Http\Controllers\SSS;
+
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\CommonController;
+use DB;
+use Log;
+// use App\PoChangeDelivery;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth; #Auth facade
+use Config;
+use Excel;
+use File;
+use Mail;
+
+/**
+* PO ChangeDelivery Controller
+*/
+class  PoChangeDeliveryController extends Controller
+{
+	public function __construct()
+    {
+        $this->middleware('auth');
+        header("Content-Type: text/html; charset=SHIFT-JIS");
+    }
+
+    /**
+    * Get All OrderDataReports.
+    */
+    public function getPoChangeDelivery(Request $request_data)
+    {
+        # checking of login user access rights
+        $common = new CommonController;
+        if(!$common->getAccessRights(Config::get('constants.MODULE_CODE_SSS')
+                                    , $userProgramAccess))
+        {
+            # redirect to home page if user has no access.
+            return redirect('/home');
+        }
+        else
+        {
+            $po = trim($request_data['po']);
+            $code = trim($request_data['code']);
+
+            if(empty($po))
+            {
+                # for empty result.
+                $po = Config::get('constants.EMPTY_FILTER_VALUE');
+            }
+            $po_details = $this->retrievePo($po, $code);
+            $answers = $this->retrieveAnswer($po);
+            $reasons = DB::table('mjustifications')->get();
+
+            $sss = DB::table('muserprograms as U')
+                                    ->join('mprograms as P', 'P.program_code', '=', 'U.program_code')
+                                    ->select('P.program_name', 'U.program_code','U.user_id','U.read_write')
+                                    ->where('U.user_id', Auth::user()->user_id)
+                                    ->where('U.delete_flag', 0)
+                                    ->where('P.program_class','SSS')
+                                    ->orderBy('U.id','asc')->get();
+
+            $wbs = DB::table('muserprograms as U')
+                                    ->join('mprograms as P', 'P.program_code', '=', 'U.program_code')
+                                    ->select('P.program_name', 'U.program_code','U.user_id','U.read_write')
+                                    ->where('U.user_id', Auth::user()->user_id)
+                                    ->where('U.delete_flag', 0)
+                                    ->where('P.program_class','WBS')
+                                    ->orderBy('U.id','asc')->get();
+            $qcdb = DB::table('muserprograms as U')
+                                    ->join('mprograms as P', 'P.program_code', '=', 'U.program_code')
+                                    ->select('P.program_name', 'U.program_code','U.user_id','U.read_write')
+                                    ->where('U.user_id', Auth::user()->user_id)
+                                    ->where('U.delete_flag', 0)
+                                    ->where('P.program_class','QCDB')
+                                    ->orderBy('U.id','asc')->get();
+
+            $qcmld = DB::table('muserprograms as U')
+                                    ->join('mprograms as P', 'P.program_code', '=', 'U.program_code')
+                                    ->select('P.program_name', 'U.program_code','U.user_id','U.read_write')
+                                    ->where('U.user_id', Auth::user()->user_id)
+                                    ->where('U.delete_flag', 0)
+                                    ->where('P.program_class','QCMLD')
+                                    ->orderBy('U.id','asc')->get();
+
+            return view('sss.PoChangeDelivery', 
+                    ['userProgramAccess' => $userProgramAccess
+                    , 'po' => $po
+                    , 'po_details' => $po_details
+                    , 'answers' => $answers
+                    , 'reasons' => $reasons,
+                    'ssss' => $sss,
+                'wbss' => $wbs,
+                'qcdbs' => $qcdb,
+                'qcmlds' => $qcmld]);
+        }
+    }
+
+    /**
+    * Get the PO details.
+    **/
+    private function retrievePo($po, &$code)
+    {
+        try
+        {
+            # retrieve PO details information data.
+            $result = DB::table('temp_mrp_info')
+            ->select(
+                    DB::raw("SUBSTRING(po, 1, 10) AS PO")
+                    , 'dcode as Code'
+                    , 'dname as Name'
+                    , DB::raw("CONCAT(cust_code, ' ',cust_name) as Customer")
+                    , DB::raw("CONCAT(balance_req, ' / ', sched_qty) as Qty")
+                    , DB::raw("balance_req as KVOL")
+                    , DB::raw("(CASE order_date 
+                                WHEN '0000-00-00' THEN NULL 
+                                ELSE DATE_FORMAT(order_date, '%m/%d/%y') 
+                               END) AS PODate")
+                    , DB::raw("(CASE due_date 
+                                WHEN '0000-00-00' THEN NULL 
+                                ELSE DATE_FORMAT(due_date, '%m/%d/%y') 
+                               END) AS Demand")
+                    , DB::raw(" '' as POTime ")
+                    , 'sup_name as UpdatedBy'
+                    , DB::raw(" '' as Remarks ")
+                    )
+            ->where('po', 'like', $po . '%')
+            ->skip(0)->take(1) 
+            ->get();
+
+            foreach ($result as $key => $value) 
+            {
+                $value = get_object_vars($value);
+                $code = $value['Code'];
+                break;
+            }
+        }
+        catch (Exception $e)
+        {
+            Log::error($e->getMessage());
+            echo 'Message: ' .$e->getMessage();
+        }
+        return $result;
+    }
+
+    /**
+    * Get R3 Answer.
+    **/
+    private function retrieveAnswer($po)
+    {
+        try
+        {
+            # retreive R3Answer data.
+            $result = DB::table('temp_prodanswer_data')
+            ->select('po'
+                , DB::raw("(CASE r3answer 
+                            WHEN '0000-00-00' THEN NULL 
+                            ELSE DATE_FORMAT(r3answer, '%m/%d/%y') 
+                           END) AS r3answer")
+                , 'time'
+                , 'qty' 
+                , 're')
+            ->where('po', $po)
+            ->get();
+        }
+        catch (Exception $e)
+        {
+            Log::error($e->getMessage());
+            echo 'Message: ' .$e->getMessage();
+        }
+        return $result;
+    }
+
+    /**
+    * Send the content of the page to Mail.
+    **/
+    public function sendMail(Request $request_data)
+    {
+        $msg_type = 'message';
+        $msg = '';
+        // return dd($request_data->all());
+
+        $to = $request_data['to'];
+        $cc = $request_data['cc'];
+        $subject = $request_data['subject'];
+        $po = $request_data['po'];
+        $code = $request_data['code'];
+        $data[0]['code'] = $request_data['code'];
+        $data[0]['new1'] = $request_data['new1'];
+        $data[0]['new2'] = $request_data['new2'];
+        $data[0]['reason'] = $request_data['reason'];
+        $data[0]['note'] = $request_data['note'];
+
+        # mail recipient is mandatory.
+        if(!$to == NULL)
+        {
+            $po_details = $this->retrievePo($po, $code);
+            $answers = $this->retrieveAnswer($po);
+
+            Mail::send('mail', ['data'=> $data
+                                , 'po_details' => $po_details
+                                , 'answers' => $answers], 
+                function($message) use ($to, $cc, $subject)
+            {
+              $message->from('us@example.com', 'Pricon Microelectronic Inc.'); // please change this
+              $message->to($to);
+              if(!$cc === NULL)
+              {
+                $message->cc($cc);
+              }
+              $message->subject($subject);
+
+            });
+            $msg_type = 'message';
+            $msg = 'Mail sent.';
+        }
+        else
+        {
+            $msg_type = 'err_message';
+            $msg = 'Please input atleast one (1) mail recipient.';   
+        }
+
+       return redirect('/pochangedelivery' 
+        . '?code='.$code.'&po=' . $po)->with([$msg_type => $msg]);
+    }
+}

@@ -1,0 +1,14 @@
+/config/database.php
+/node_modules
+.env
+/public/storage
+Homestead.yaml
+Homestead.json
+/storage/Material_List_For_Direct_Ordering
+/storage/Order_Data_Check
+/storage/brcodekitting
+/storage/brcodereturn
+/storage/brcodesakidashi
+/storage/email_attachements
+/storage/exports
+/vendor
