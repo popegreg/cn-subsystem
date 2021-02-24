@@ -25,6 +25,14 @@ class Authenticate
             }
         }
 
+        $productline = Auth::user()->productline;
+
+        if ($productline !== 'CN') {
+            Auth::logout();
+            session(['productline_error' => "Your account is for ".$productline]);
+            return redirect('/');
+        }
+
         return $next($request);
     }
 }

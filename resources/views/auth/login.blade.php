@@ -19,6 +19,12 @@
                 <h4>CN YPICS SUBSYSTEM</h4>
             </div>
 
+            @if (\Session::has('productline_error'))
+                <div class="alert alert-danger">
+                    <!-- <button type="button" id="btn_close_error" class="close text-white" data-dismiss="alert" aria-hidden="true">&times;</button> -->
+                    <strong>Failed!</strong> {{ \Session::get('productline_error') }} <br/>
+                </div>
+            @endif
 
             <div class="form-group {{$errors->has('user_id') ? 'has-error' : ''}}">
                 <!--ie8, ie9 does not support html5 placeholder, so we just show field title for that-->
