@@ -25,7 +25,7 @@
                 <label class="control-label visible-ie8 visible-ie9">User ID</label>
                 <div class="input-icon">
                     <i class="fa fa-user"></i>
-                    <input class="form-control input-sm placeholder-no-fix" type="text" placeholder="User ID" name="user_id" id="user_id" value="{{ old('user_id') }}"/>
+                    <input class="form-control input-sm placeholder-no-fix" type="text" placeholder="User ID" name="user_id" id="user_id" value="{{ old('user_id') }}" autocomplete="off" />
                     @if ($errors->has('user_id'))
                         <span class="help-block">
                             <strong>{{ $errors->first('user_id') }}</strong>
